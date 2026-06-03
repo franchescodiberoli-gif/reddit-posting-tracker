@@ -1,0 +1,11 @@
+services:
+  - type: worker
+    name: reddit-airtable-scraper
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python runner.py
+    envVars:
+      - key: AIRTABLE_API_KEY
+        sync: false
+      - key: AIRTABLE_BASE_ID
+        value: apphyb3tOmjIemkN6
