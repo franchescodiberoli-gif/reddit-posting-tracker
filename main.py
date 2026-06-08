@@ -17,6 +17,7 @@ from pyairtable import Api
 # --- CONFIG ---
 AIRTABLE_API_KEY = os.environ["AIRTABLE_API_KEY"]
 AIRTABLE_BASE_ID = os.environ["AIRTABLE_BASE_ID"]
+PROXY_URL = os.environ.get("PROXY_URL")  # optional: http://user:pass@host:port
 
 # Using table IDs (more reliable than names with emojis)
 TABLE_ACCOUNTS         = "tblbj1r7Ty7ZDckYA"
@@ -44,10 +45,11 @@ MONTHS_ES = {
 def reddit_get(url: str):
     sep = "&" if "?" in url else "?"
     full_url = url + sep + "raw_json=1"
+    proxies = {"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None
     for attempt in range(3):
         try:
             time.sleep(2)
-            r = requests.get(full_url, headers=REDDIT_HEADERS, timeout=15)
+            r = requests.get(full_url, headers=REDDIT_HEADERS, proxies=proxies, timeout=15)
             if r.status_code == 200:
                 return r.json()
             if r.status_code == 404:
