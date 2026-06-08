@@ -220,6 +220,11 @@ def process_content(api: Api):
             print(f"  ID {content_id}: Status='{status}' -- skipping")
             continue
 
+        # Skip already-published content
+        if f.get("publicado "):
+            print(f"  ID {content_id}: already published -- skipping")
+            continue
+
         titulo = f.get("titulo", "").strip()
         if not titulo:
             print(f"  ID {content_id}: no titulo -- skipping")
@@ -244,7 +249,7 @@ def process_content(api: Api):
 
         if post:
             print(f"  Post found! score={post.get('score',0)}, comments={post.get('num_comments',0)}")
-            publicado    = "Sí"
+            publicado    = "SI"
             fecha_pub    = to_iso(post["created_utc"])
             url_post     = "https://www.reddit.com" + post.get("permalink", "")
             up_votes     = post.get("score", 0)
@@ -252,7 +257,7 @@ def process_content(api: Api):
             num_comments = post.get("num_comments", 0)
         else:
             print(f"  Post not found")
-            publicado    = "No"
+            publicado    = "NO"
             fecha_pub    = None
             url_post     = None
             up_votes     = None
@@ -276,11 +281,11 @@ def process_content(api: Api):
         if url_post:
             ps_fields["URL del post"] = url_post
         if up_votes is not None:
-            ps_fields["UP votes normal"] = up_votes
+            ps_fields["UP votes normal "] = up_votes
         if down_votes is not None:
-            ps_fields["votos malos"] = down_votes
+            ps_fields["votos malos "] = down_votes
         if num_comments is not None:
-            ps_fields["num. post coment"] = num_comments
+            ps_fields["num. post coment "] = num_comments
 
         if content_id in ps_by_content_id:
             existing = ps_by_content_id[content_id]
@@ -291,7 +296,7 @@ def process_content(api: Api):
             print(f"  PS row CREATED")
 
         if post:
-            content_table.update(rec["id"], {"publicado?": True})
+            content_table.update(rec["id"], {"publicado ": True})
             print(f"  Content publicado? = True")
 
 
