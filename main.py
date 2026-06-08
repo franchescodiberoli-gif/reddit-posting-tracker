@@ -1,280 +1,285 @@
+#!/usr/bin/env python3
 """
-main.py — Reddit Post Scraper
-Detonador: campo "publicado?" = True en Content.
-Por cada registro nuevo marcado:
-  1. Lee datos de Content (y sus lookups)
-  2. Busca el post en Reddit por título + subreddit
-  3. Crea fila en Posting Schedule con todo lo que encontró
-Corre cada 24 horas.
+Reddit Posting Tracker Bot
+- Runs every 24h via GitHub Actions (free)
+- Updates Accounts table with Reddit profile stats
+- Scans Content table and fills Posting Schedule
+- No Reddit API key needed -- uses public JSON endpoints
 """
 
 import os
 import time
-import logging
+import requests
 from datetime import datetime, timezone
+from pyairtable import Api
 
-import airtable as AT
-import reddit   as RD
-from config import *
+# --- CONFIG ---
+AIRTABLE_API_KEY = os.environ["AIRTABLE_API_KEY"]
+AIRTABLE_BASE_ID = os.environ["AIRTABLE_BASE_ID"]
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [SCRAPER] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
-)
+TABLE_ACCOUNTS         = "Accounts"
+TABLE_CONTENT          = "Content"
+TABLE_POSTING_SCHEDULE = "Posting Schedule"
+
+REDDIT_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json",
+}
+
+MONTHS_ES = {
+    1: "enero",    2: "febrero",   3: "marzo",     4: "abril",
+    5: "mayo",     6: "junio",     7: "julio",     8: "agosto",
+    9: "septiembre", 10: "octubre", 11: "noviembre", 12: "diciembre",
+}
 
 
-# ─── HELPERS ─────────────────────────────────────────────────────────────────
+# --- REDDIT HELPERS ---
 
-def safe(fields, key, default=""):
-    """Lee un campo de forma segura."""
-    val = fields.get(key, default)
-    if val is None:
-        return default
-    return val
+def reddit_get(url: str):
+    sep = "&" if "?" in url else "?"
+    full_url = url + sep + "raw_json=1"
+    for attempt in range(3):
+        try:
+            time.sleep(2)
+            r = requests.get(full_url, headers=REDDIT_HEADERS, timeout=15)
+            if r.status_code == 200:
+                return r.json()
+            if r.status_code == 404:
+                return None
+            print(f"  [HTTP {r.status_code}] attempt {attempt+1}/3")
+        except requests.RequestException as e:
+            print(f"  [error] attempt {attempt+1}/3: {e}")
+        time.sleep(3)
+    return None
 
 
-def lookup_str(fields, key):
-    """
-    Los campos lookup en Airtable devuelven listas.
-    Retorna el primer elemento como string, o "".
-    """
-    val = fields.get(key)
-    if isinstance(val, list):
-        return str(val[0]) if val else ""
+def format_date_es(utc_timestamp: float) -> str:
+    dt = datetime.fromtimestamp(utc_timestamp, tz=timezone.utc)
+    return f"{dt.day} de {MONTHS_ES[dt.month]} de {dt.year} {dt.hour:02d}:{dt.minute:02d}"
+
+
+def to_iso(utc_timestamp: float) -> str:
+    dt = datetime.fromtimestamp(utc_timestamp, tz=timezone.utc)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+def get_user_about(username: str):
+    data = reddit_get(f"https://www.reddit.com/user/{username}/about.json")
+    if data is None:
+        return None
+    return data.get("data")
+
+
+def get_user_submissions(username: str) -> list:
+    data = reddit_get(
+        f"https://www.reddit.com/user/{username}/submitted.json?sort=new&limit=100"
+    )
+    if not data:
+        return []
+    return [item["data"] for item in data["data"]["children"]]
+
+
+def get_user_comments(username: str) -> list:
+    data = reddit_get(
+        f"https://www.reddit.com/user/{username}/comments.json?sort=new&limit=100"
+    )
+    if not data:
+        return []
+    return [item["data"] for item in data["data"]["children"]]
+
+
+def count_last_24h(items: list) -> int:
+    cutoff = time.time() - 86400
+    return sum(1 for item in items if item.get("created_utc", 0) > cutoff)
+
+
+def find_post_by_title(submissions: list, search_title: str):
+    target = search_title.lower().strip()
+    for post in submissions:
+        if post.get("title", "").lower().strip() == target:
+            return post
+    return None
+
+
+def clean_username(raw: str) -> str:
+    return raw.strip().lstrip("u/")
+
+
+def pick(val) -> str:
     if val is None:
         return ""
+    if isinstance(val, list):
+        return str(val[0]) if val else ""
     return str(val)
 
 
-def find_existing_ps_row(content_num_id):
-    """
-    Busca si ya existe una fila en Posting Schedule para este Content ID.
-    Retorna (record_id, fields) de la fila existente, o (None, None).
-    """
-    formula  = f'{{Content ID}}="{content_num_id}"'
-    existing = AT.fetch_all(TABLE_POSTING_SCHEDULE, filter_formula=formula)
-    if existing:
-        return existing[0]["id"], existing[0].get("fields", {})
-    return None, None
+# --- STEP 1: UPDATE ACCOUNTS ---
+
+def update_accounts(api: Api):
+    table = api.table(AIRTABLE_BASE_ID, TABLE_ACCOUNTS)
+    records = table.all()
+    print(f"[Accounts] {len(records)} account(s) found")
+
+    for rec in records:
+        f = rec["fields"]
+        raw_username = f.get("Reddit Username", "").strip()
+        if not raw_username:
+            continue
+
+        username = clean_username(raw_username)
+        print(f"  Scraping u/{username}...")
+
+        about = get_user_about(username)
+
+        if about is None:
+            print(f"  -> Banned or not found")
+            table.update(rec["id"], {"Status": "Banned"})
+            continue
+
+        subreddit_data = about.get("subreddit") or {}
+        followers = subreddit_data.get("subscribers", 0)
+
+        submissions = get_user_submissions(username)
+        comments    = get_user_comments(username)
+
+        posts_24h      = count_last_24h(submissions)
+        comments_total = len(comments)
+
+        updates = {
+            "Account Age":        format_date_es(about["created_utc"]),
+            "Followers":          followers,
+            "Posts Made ( 24 h)": posts_24h,
+            "Post Karma":         about.get("link_karma", 0),
+            "Comments Made":      comments_total,
+            "Comment Karma":      about.get("comment_karma", 0),
+            "Status":             "Active",
+        }
+
+        table.update(rec["id"], updates)
+        print(f"  post_karma={updates['Post Karma']}, comment_karma={updates['Comment Karma']}, followers={followers}, posts_24h={posts_24h}")
 
 
-# ─── CORE ────────────────────────────────────────────────────────────────────
+# --- STEP 2: CONTENT -> POSTING SCHEDULE ---
 
-def process_content_record(rec):
-    """
-    Procesa un registro de Content marcado como publicado.
-    Crea la fila correspondiente en Posting Schedule.
-    """
-    record_id = rec["id"]
-    fields    = rec.get("fields", {})
+def process_content(api: Api):
+    content_table = api.table(AIRTABLE_BASE_ID, TABLE_CONTENT)
+    ps_table      = api.table(AIRTABLE_BASE_ID, TABLE_POSTING_SCHEDULE)
 
-    # ID numérico del registro (autonumber de Airtable)
-    content_num_id = safe(fields, CON_ID, "")
-
-    # ¿Ya existe una fila para este Content?
-    existing_row_id, existing_fields = find_existing_ps_row(str(content_num_id))
-
-    # Si ya existe Y el post tiene más de 48h de publicado → NO actualizar más.
-    # El post de Reddit ya murió organicamente, sus stats quedan congeladas.
-    UPDATE_WINDOW_HOURS = 48
-    if existing_row_id and existing_fields:
-        fecha_pub_existente = existing_fields.get(PS_FECHA_PUB)
-        if fecha_pub_existente:
-            try:
-                from datetime import datetime, timezone
-                dt_pub = datetime.fromisoformat(
-                    fecha_pub_existente.replace("Z", "+00:00")
-                )
-                horas_desde_pub = (
-                    datetime.now(tz=timezone.utc) - dt_pub
-                ).total_seconds() / 3600
-                if horas_desde_pub > UPDATE_WINDOW_HOURS:
-                    logging.info(
-                        f"  Content ID {content_num_id}: post tiene "
-                        f"{horas_desde_pub:.0f}h (>{UPDATE_WINDOW_HOURS}h), "
-                        f"congelado. Saltando."
-                    )
-                    return
-            except Exception as e:
-                logging.warning(f"  No se pudo parsear fecha de publicacion: {e}")
-
-    # ── Datos básicos de Content ──────────────────────────────────────────
-    username   = lookup_str(fields, CON_REDDIT_NAMAE)  # nombre de cuenta de Reddit
-    titulo     = safe(fields, CON_TITULO)
-    flair_val  = safe(fields, CON_FLAIR)
-    metodo     = safe(fields, CON_METODO)
-    bann       = safe(fields, CON_BANN)
-    status_con = safe(fields, CON_STATUS)
-    picture    = safe(fields, CON_PICTURE)
-    redgif_url = safe(fields, CON_REDGIF_URL)
-    type_val   = safe(fields, CON_TYPE)
-
-    # Subreddit: viene como lookup (lista)
-    subreddit_name = lookup_str(fields, "subreddit name (de Subreddit)")
-    if not subreddit_name:
-        # Intentar campo directo
-        subreddit_name = lookup_str(fields, CON_SUBREDDIT)
-
-    # Lookups de Accounts (vienen como listas)
-    model_name      = lookup_str(fields, "Model Name (from Accounts)")
-    niche_val       = lookup_str(fields, "Niche (from Subreddits) (from Accounts)")
-    poster_val      = lookup_str(fields, "Poster (from Accounts)")
-    agency_val      = lookup_str(fields, "Agency (from Accounts)")
-    subreddits_val  = lookup_str(fields, "Subreddits (from Accounts)")
-
-    # Lookups de Subreddits
-    nicho_sub       = lookup_str(fields, "nicho (de Subreddit)")
-    mejor_horario   = lookup_str(fields, "mejor horario (de Subreddit)")
-    tipo_contenido  = lookup_str(fields, "tipo de contenido (de Subreddit)")
-    url_subreddit   = lookup_str(fields, "URL (de Subreddit)")
-
-    logging.info(f"\n--- Content ID {content_num_id} | u/{username} | r/{subreddit_name} ---")
-    logging.info(f"    Titulo: {titulo[:60]}")
-
-    # ── Buscar post en Reddit ─────────────────────────────────────────────
-    post_found = None
-    if username and titulo:
-        post_found = RD.find_post_by_title(username, subreddit_name, titulo)
-        time.sleep(2)  # respetar rate limit
-
-    # ── Construir fila de Posting Schedule ───────────────────────────────
-    now_iso = datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-
-    ps_fields = {
-        # ── Siempre se llenan ──────────────────────────────────────────
-        PS_PUBLICADO:      "SI" if post_found else "NO",
-        PS_CONTENT_ID:     str(content_num_id),
-        PS_CONTENT_LINK:   [record_id],          # link al registro Content
-        PS_REDDIT_NAMAE:   username,
-        PS_MODEL_NAME:     model_name,
-        PS_SUBREDDITS:     subreddits_val,
-        PS_NICHE:          niche_val,
-        PS_POSTER:         poster_val,
-        PS_AGENCY:         agency_val,
-        PS_SUBREDDIT_NAME: subreddit_name,
-        PS_NICHO_SUB:      nicho_sub,
-        PS_MEJOR_HORARIO:  mejor_horario,
-        PS_TIPO_CONTENIDO: tipo_contenido,
-        PS_METODO:         metodo,
-        PS_BANN:           bann,
-        PS_STATUS:         status_con,
-
-        # ── Vacíos — se llenan manualmente ────────────────────────────
-        # PS_NUM_VISITAS, PS_VOTES_COMPRADOS, PS_INVERSION, PS_GANANCIA
-    }
-
-    if post_found:
-        # ── Datos reales del post en Reddit ───────────────────────────
-        created_utc = post_found.get("created_utc")
-        fecha_pub = RD.format_utc(created_utc)
-        url_post  = f"https://www.reddit.com{post_found.get('permalink', '')}"
-        upvotes   = post_found.get("ups", 0)
-        downvotes = post_found.get("downs", 0)
-        comments  = post_found.get("num_comments", 0)
-        flair_r   = post_found.get("link_flair_text") or flair_val
-        titulo_r  = post_found.get("title") or titulo
-        media_url = RD.extract_media_url(post_found)
-
-        # ── Virality score = upvotes / horas desde publicacion ────────
-        # Mide la VELOCIDAD con la que gana upvotes, no el total acumulado.
-        virality = 0.0
-        if created_utc:
-            horas = (time.time() - created_utc) / 3600
-            if horas < 1:
-                horas = 1  # evitar dividir por casi-cero en posts muy nuevos
-            virality = round(upvotes / horas, 2)
-
-        ps_fields[PS_FECHA_PUB]   = fecha_pub
-        ps_fields[PS_URL_POST]    = url_post
-        ps_fields[PS_VOTES_NORMAL]= upvotes
-        ps_fields[PS_VOTOS_MALOS] = downvotes
-        ps_fields[PS_NUM_COMMENTS]= comments
-        ps_fields[PS_VIRALITY]    = virality
-        ps_fields[PS_TITULO]      = titulo_r
-        ps_fields[PS_FLAIR]       = flair_r
-        ps_fields[PS_TYPE]        = type_val
-
-        # Picture y RedGif: usar los del post real si hay, si no los de Content
-        if media_url:
-            ps_fields[PS_PICTURE] = media_url
-        elif picture:
-            ps_fields[PS_PICTURE] = picture
-
-        if redgif_url:
-            ps_fields[PS_REDGIF_URL] = redgif_url
-
-        logging.info(f"  ✅ Post encontrado → {url_post}")
-        logging.info(f"     Upvotes: {upvotes} | Virality: {virality}/h | Comentarios: {comments}")
-
-    else:
-        # ── Post no encontrado: campos de Reddit vacíos ───────────────
-        # titulo, flair, picture, redgif, type → vacíos (no confirmar)
-        logging.info(f"  ❌ Post NO encontrado en Reddit")
-
-    # ── Guardar en Posting Schedule (crear o actualizar) ──────────────────
-    try:
-        if existing_row_id:
-            # Actualizar fila existente — pero NO pisar los campos manuales
-            # (num. visitas, UP votes comprados, INVERSION, GANANCIA, titulo 2.0)
-            campos_manuales = {
-                PS_NUM_VISITAS, PS_VOTES_COMPRADOS, PS_INVERSION,
-                PS_GANANCIA, PS_TITULO_2
-            }
-            update_fields = {
-                k: v for k, v in ps_fields.items()
-                if k not in campos_manuales
-            }
-            AT.update_record(TABLE_POSTING_SCHEDULE, existing_row_id, update_fields)
-            logging.info(f"  🔄 Fila actualizada en Posting Schedule")
-        else:
-            AT.create_record(TABLE_POSTING_SCHEDULE, ps_fields)
-            logging.info(f"  💾 Fila creada en Posting Schedule")
-
-        # Actualizar status en Content
-        AT.update_record(TABLE_CONTENT, record_id, {
-            CON_STATUS: "Published" if post_found else "Pending"
-        })
-
-    except Exception as e:
-        logging.error(f"  ❌ Error guardando en Posting Schedule: {e}")
-
-
-# ─── MAIN ────────────────────────────────────────────────────────────────────
-
-def run_scraper():
-    logging.info("=" * 60)
-    logging.info("Iniciando ciclo de scraping...")
-
-    # Filtrar solo Content con publicado? = true
-    # y que no tenga ya una fila en Posting Schedule (usamos Content ID)
-    content_records = AT.fetch_all(
-        TABLE_CONTENT,
-        filter_formula=f'{{{CON_PUBLICADO}}}=1'
+    all_content = content_table.all()
+    all_content.sort(
+        key=lambda r: int(r["fields"].get("ID 🤳 Content") or 0)
     )
 
-    if not content_records:
-        logging.info("No hay registros con publicado? marcado. Nada que procesar.")
-        return
+    all_ps = ps_table.all()
+    ps_by_content_id = {
+        str(r["fields"].get("ID 📈 Posting Schedule", "")).strip(): r
+        for r in all_ps
+    }
 
-    logging.info(f"{len(content_records)} registros marcados como publicado?")
+    print(f"[Content] {len(all_content)} row(s), {len(all_ps)} PS row(s) exist")
 
-    for rec in content_records:
-        try:
-            process_content_record(rec)
-        except Exception as e:
-            logging.error(f"Error procesando registro {rec['id']}: {e}", exc_info=True)
-        time.sleep(1)
+    for rec in all_content:
+        f = rec["fields"]
 
-    logging.info("✅ Ciclo completado.")
+        content_id = str(f.get("ID 🤳 Content", "")).strip()
+        if not content_id or content_id == "0":
+            continue
+
+        titulo = f.get("titulo", "").strip()
+        if not titulo:
+            print(f"  ID {content_id}: no titulo -- skipping")
+            continue
+
+        print(f"  -- Content ID {content_id}: '{titulo}' --")
+
+        reddit_username = pick(f.get("Reddit Username (from 👤 Accounts) 2", ""))
+        if not reddit_username:
+            print(f"  -> No Reddit username -- skipping")
+            continue
+
+        username = clean_username(reddit_username)
+        print(f"  -> u/{username}")
+
+        submissions = get_user_submissions(username)
+        post = find_post_by_title(submissions, titulo)
+
+        if post:
+            print(f"  Post found! score={post.get('score',0)}, comments={post.get('num_comments',0)}")
+            publicado    = "Sí"
+            fecha_pub    = to_iso(post["created_utc"])
+            url_post     = "https://www.reddit.com" + post.get("permalink", "")
+            up_votes     = post.get("score", 0)
+            down_votes   = post.get("downs", 0)
+            num_comments = post.get("num_comments", 0)
+        else:
+            print(f"  Post not found")
+            publicado    = "No"
+            fecha_pub    = None
+            url_post     = None
+            up_votes     = None
+            down_votes   = None
+            num_comments = None
+
+        ps_fields = {
+            "ID 📈 Posting Schedule":                                  content_id,
+            "PUBLICADO?":                                                     publicado,
+            "👤REDDIT NAMAE (from 🤳 Content)":                reddit_username,
+            "USER NAME (from 👤 Accounts) (from 🤳 Content)":  pick(f.get("USER NAME (from 👤 Accounts)")),
+            "Model Name (from 👤 Accounts) (from 🤳 Content)": pick(f.get("Model Name (from 👤 Accounts)")),
+            "titulo (from 🤳 Content)":                               titulo,
+            "flair (from 🤳 Content)":                                pick(f.get("flair")),
+            "metodo (from 🤳 Content)":                               pick(f.get("metodo")),
+            "bann? (from 🤳 Content)":                                pick(f.get("bann?")),
+        }
+
+        if fecha_pub:
+            ps_fields["Fecha de publicacion"] = fecha_pub
+        if url_post:
+            ps_fields["URL del post"] = url_post
+        if up_votes is not None:
+            ps_fields["UP votes normal"] = up_votes
+        if down_votes is not None:
+            ps_fields["votos malos"] = down_votes
+        if num_comments is not None:
+            ps_fields["num. post coment"] = num_comments
+
+        if content_id in ps_by_content_id:
+            existing = ps_by_content_id[content_id]
+            ps_table.update(existing["id"], ps_fields)
+            print(f"  PS row UPDATED")
+        else:
+            ps_table.create(ps_fields)
+            print(f"  PS row CREATED")
+
+        if post:
+            content_table.update(rec["id"], {"publicado?": True})
+            print(f"  Content publicado? = True")
+
+
+# --- MAIN ---
+
+def main():
+    print("=" * 50)
+    print("Reddit Posting Tracker")
+    print(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("=" * 50)
+
+    api = Api(AIRTABLE_API_KEY)
+
+    print("\n[Step 1] Updating Account stats from Reddit...")
+    update_accounts(api)
+
+    print("\n[Step 2] Processing Content -> Posting Schedule...")
+    process_content(api)
+
+    print("\n" + "=" * 50)
+    print("Done!")
+    print("=" * 50)
 
 
 if __name__ == "__main__":
-    INTERVAL_HOURS = 24
-    while True:
-        try:
-            run_scraper()
-        except Exception as e:
-            logging.error(f"Error crítico en scraper: {e}", exc_info=True)
-        logging.info(f"Esperando {INTERVAL_HOURS}h...")
-        time.sleep(INTERVAL_HOURS * 3600)
+    main()
