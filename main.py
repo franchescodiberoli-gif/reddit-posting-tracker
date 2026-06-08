@@ -4,6 +4,7 @@ Reddit Posting Tracker Bot
 - Runs every 24h via GitHub Actions (free)
 - Updates Accounts table with Reddit profile stats
 - Scans Content table and fills Posting Schedule
+- Skips Content rows whose account is Banned
 - No Reddit API key needed -- uses public JSON endpoints
 """
 
@@ -136,7 +137,7 @@ def update_accounts(api: Api):
         about = get_user_about(username)
 
         if about is None:
-            print(f"  -> Banned or not found")
+            print(f"  -> BANNED or not found -- marking Status=Banned")
             table.update(rec["id"], {"Status": "Banned"})
             continue
 
@@ -160,7 +161,7 @@ def update_accounts(api: Api):
         }
 
         table.update(rec["id"], updates)
-        print(f"  post_karma={updates['Post Karma']}, comment_karma={updates['Comment Karma']}, followers={followers}, posts_24h={posts_24h}")
+        print(f"  Status=Active, post_karma={updates['Post Karma']}, comment_karma={updates['Comment Karma']}, followers={followers}, posts_24h={posts_24h}")
 
 
 # --- STEP 2: CONTENT -> POSTING SCHEDULE ---
@@ -168,6 +169,17 @@ def update_accounts(api: Api):
 def process_content(api: Api):
     content_table = api.table(AIRTABLE_BASE_ID, TABLE_CONTENT)
     ps_table      = api.table(AIRTABLE_BASE_ID, TABLE_POSTING_SCHEDULE)
+
+    # Build set of banned usernames -- these will be skipped entirely
+    accounts_table = api.table(AIRTABLE_BASE_ID, TABLE_ACCOUNTS)
+    banned = set()
+    for acc in accounts_table.all():
+        if acc["fields"].get("Status") == "Banned":
+            raw = acc["fields"].get("Reddit Username", "").strip()
+            if raw:
+                banned.add(clean_username(raw).lower())
+    if banned:
+        print(f"[Content] Banned accounts that will be skipped: {banned}")
 
     all_content = content_table.all()
     all_content.sort(
@@ -194,15 +206,19 @@ def process_content(api: Api):
             print(f"  ID {content_id}: no titulo -- skipping")
             continue
 
-        print(f"  -- Content ID {content_id}: '{titulo}' --")
-
         reddit_username = pick(f.get("Reddit Username (from 👤 Accounts) 2", ""))
         if not reddit_username:
-            print(f"  -> No Reddit username -- skipping")
+            print(f"  ID {content_id}: no Reddit username -- skipping")
             continue
 
         username = clean_username(reddit_username)
-        print(f"  -> u/{username}")
+
+        # Skip banned accounts -- do not touch Content or Posting Schedule
+        if username.lower() in banned:
+            print(f"  ID {content_id}: u/{username} is Banned -- skipping")
+            continue
+
+        print(f"  -- Content ID {content_id}: '{titulo}' (u/{username}) --")
 
         submissions = get_user_submissions(username)
         post = find_post_by_title(submissions, titulo)
