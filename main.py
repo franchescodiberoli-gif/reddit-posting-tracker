@@ -221,7 +221,7 @@ def process_content(api: Api):
             continue
 
         # Skip already-published content
-        if f.get("publicado "):
+        if f.get("publicado?"):
             print(f"  ID {content_id}: already published -- skipping")
             continue
 
@@ -296,7 +296,7 @@ def process_content(api: Api):
             print(f"  PS row CREATED")
 
         if post:
-            content_table.update(rec["id"], {"publicado ": True})
+            content_table.update(rec["id"], {"publicado?": True})
             print(f"  Content publicado? = True")
 
 
