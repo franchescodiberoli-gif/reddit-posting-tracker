@@ -18,6 +18,7 @@ from pyairtable import Api
 AIRTABLE_API_KEY = os.environ["AIRTABLE_API_KEY"]
 AIRTABLE_BASE_ID = os.environ["AIRTABLE_BASE_ID"]
 PROXY_URL = os.environ.get("PROXY_URL")  # optional: http://user:pass@host:port
+REDDIT_COOKIE = os.environ.get("REDDIT_COOKIE")
 
 # Using table IDs (more reliable than names with emojis)
 TABLE_ACCOUNTS         = "tblbj1r7Ty7ZDckYA"
@@ -33,7 +34,7 @@ REDDIT_HEADERS = {
     "Accept":          "application/json, text/plain, */*",
     "Accept-Language": "en-US,en;q=0.9",
     "Accept-Encoding": "gzip, deflate, br",
-    "Cookie":          "intl_splash=false",
+    "Cookie":          REDDIT_COOKIE or "intl_splash=false",
     "sec-ch-ua":        '"Google Chrome";v="125", "Chromium";v="125", "Not.A/Brand";v="24"',
     "sec-ch-ua-mobile":   "?0",
     "sec-ch-ua-platform":  '"Windows"',
