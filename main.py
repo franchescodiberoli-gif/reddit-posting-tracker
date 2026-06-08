@@ -236,7 +236,7 @@ def process_content(api: Api):
 
         if username.lower() in banned:
             print(f"  ID {content_id}: u/{username} is Banned -- setting Status=STOP")
-            content_table.update(rec["id"], {"Status": "STOP"})
+            content_table.update(rec["id"], {"Status": "STOP", "bann?": True})
             continue
 
         print(f"  -- Content ID {content_id}: '{titulo}' (u/{username}) --")
@@ -286,14 +286,14 @@ def process_content(api: Api):
 
         if content_id in ps_by_content_id:
             existing = ps_by_content_id[content_id]
-            if existing["fields"].get("PUBLICADO?") == "SI":
-                print(f"  ID {content_id}: PS row PUBLICADO?=SI -- skipping")
-                continue
             ps_table.update(existing["id"], ps_fields)
             print(f"  PS row UPDATED")
         else:
             ps_table.create(ps_fields)
             print(f"  PS row CREATED")
+
+        content_table.update(rec["id"], {"Status": "DONE"})
+        print(f"  Content Status -> DONE")
 
 
 
