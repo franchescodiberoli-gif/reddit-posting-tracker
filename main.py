@@ -18,9 +18,10 @@ from pyairtable import Api
 AIRTABLE_API_KEY = os.environ["AIRTABLE_API_KEY"]
 AIRTABLE_BASE_ID = os.environ["AIRTABLE_BASE_ID"]
 
-TABLE_ACCOUNTS         = "Accounts"
-TABLE_CONTENT          = "Content"
-TABLE_POSTING_SCHEDULE = "Posting Schedule"
+# Using table IDs (more reliable than names with emojis)
+TABLE_ACCOUNTS         = "tblbj1r7Ty7ZDckYA"
+TABLE_CONTENT          = "tblYJ1Q07A1R9UAsq"
+TABLE_POSTING_SCHEDULE = "tblGOErjZ39deFM29"
 
 REDDIT_HEADERS = {
     "User-Agent": (
@@ -179,7 +180,7 @@ def process_content(api: Api):
             if raw:
                 banned.add(clean_username(raw).lower())
     if banned:
-        print(f"[Content] Banned accounts that will be skipped: {banned}")
+        print(f"[Content] Banned accounts skipped: {banned}")
 
     all_content = content_table.all()
     all_content.sort(
@@ -213,7 +214,6 @@ def process_content(api: Api):
 
         username = clean_username(reddit_username)
 
-        # Skip banned accounts -- do not touch Content or Posting Schedule
         if username.lower() in banned:
             print(f"  ID {content_id}: u/{username} is Banned -- skipping")
             continue
