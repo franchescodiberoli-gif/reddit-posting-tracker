@@ -28,9 +28,18 @@ REDDIT_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
+        "Chrome/125.0.0.0 Safari/537.36"
     ),
-    "Accept": "application/json",
+    "Accept":          "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Cookie":          "intl_splash=false",
+    "sec-ch-ua":        '"Google Chrome";v="125", "Chromium";v="125", "Not.A/Brand";v="24"',
+    "sec-ch-ua-mobile":   "?0",
+    "sec-ch-ua-platform":  '"Windows"',
+    "sec-fetch-dest":  "empty",
+    "sec-fetch-mode":  "cors",
+    "sec-fetch-site":  "same-origin",
 }
 
 MONTHS_ES = {
@@ -294,6 +303,16 @@ def main():
     print("=" * 50)
 
     api = Api(AIRTABLE_API_KEY)
+
+    if PROXY_URL:
+        try:
+            proxies = {"http": PROXY_URL, "https": PROXY_URL}
+            r = requests.get("https://httpbin.org/ip", proxies=proxies, timeout=10)
+            print(f"Proxy active — outbound IP: {r.json().get('origin')}")
+        except Exception as e:
+            print(f"Proxy check failed: {e}")
+    else:
+        print("No proxy configured — using direct connection")
 
     print("\n[Step 1] Updating Account stats from Reddit...")
     update_accounts(api)
