@@ -202,6 +202,12 @@ def process_content(api: Api):
         if not content_id or content_id == "0":
             continue
 
+        # Only process rows with Status = "post"
+        status = f.get("Status", "Pending")
+        if status != "post":
+            print(f"  ID {content_id}: Status='{status}' -- skipping")
+            continue
+
         titulo = f.get("titulo", "").strip()
         if not titulo:
             print(f"  ID {content_id}: no titulo -- skipping")
@@ -215,7 +221,8 @@ def process_content(api: Api):
         username = clean_username(reddit_username)
 
         if username.lower() in banned:
-            print(f"  ID {content_id}: u/{username} is Banned -- skipping")
+            print(f"  ID {content_id}: u/{username} is Banned -- setting Status=STOP")
+            content_table.update(rec["id"], {"Status": "STOP"})
             continue
 
         print(f"  -- Content ID {content_id}: '{titulo}' (u/{username}) --")
