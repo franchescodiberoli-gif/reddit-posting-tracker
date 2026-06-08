@@ -196,7 +196,7 @@ def process_content(api: Api):
 
     all_content = content_table.all()
     all_content.sort(
-        key=lambda r: int(r["fields"].get("ID 🤳 Content") or 0)
+        key=lambda r: int(r["fields"].get("ID  🤳 Content") or 0)
     )
 
     all_ps = ps_table.all()
@@ -210,7 +210,7 @@ def process_content(api: Api):
     for rec in all_content:
         f = rec["fields"]
 
-        content_id = str(f.get("ID 🤳 Content", "")).strip()
+        content_id = str(f.get("ID  🤳 Content", "")).strip()
         if not content_id or content_id == "0":
             continue
 
