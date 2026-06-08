@@ -298,6 +298,61 @@ def process_content(api: Api):
 
 
 
+
+
+# ─── STEP 3: UPDATE 24H STATS ───────────────────────────────────────────────
+
+def update_24h_stats(api: Api):
+    ps_table = api.table(AIRTABLE_BASE_ID, TABLE_POSTING_SCHEDULE)
+    all_ps   = ps_table.all()
+    now      = time.time()
+    print(f"\n[Step 3] Checking 24h stat updates...")
+    updated = 0
+
+    for rec in all_ps:
+        f     = rec["fields"]
+        ps_id = f.get("ID U0001f4c8 Posting Schedule", "?")
+
+        if f.get("PUBLICADO?") != "SI":
+            continue
+        if f.get("Actualizacion despues de 24 horas del post?"):
+            continue
+
+        fecha_pub = f.get("Fecha de publicacion")
+        if not fecha_pub:
+            continue
+
+        pub_ts = datetime.fromisoformat(fecha_pub.replace("Z", "+00:00")).timestamp()
+        if now - pub_ts < 86400:
+            print(f"  PS {ps_id}: less than 24h -- skipping")
+            continue
+
+        reddit_username = pick(f.get("U0001f464REDDIT NAMAE (from U0001f933 Content)"))
+        titulo          = f.get("titulo (from U0001f933 Content)", "")
+
+        if not reddit_username or not titulo:
+            continue
+
+        username = clean_username(reddit_username)
+        print(f"\n  PS {ps_id}: '{titulo}' (u/{username}) -- updating...")
+
+        submissions = get_user_submissions(username)
+        post        = find_post_by_title(submissions, titulo)
+
+        if post:
+            ps_table.update(rec["id"], {
+                "UP votes normal ":                            post.get("score", 0),
+                "votos malos ":                                post.get("downs", 0),
+                "num. post coment ":                           post.get("num_comments", 0),
+                "Actualizacion despues de 24 horas del post?": True,
+            })
+            print(f"  ✓ score={post.get('score',0)}, comments={post.get('num_comments',0)} -- 24h done")
+            updated += 1
+        else:
+            print(f"  Post not found -- will retry next run")
+
+    print(f"[Step 3] {updated} row(s) updated with 24h stats")
+
 # --- MAIN ---
 
 def main():
@@ -323,6 +378,9 @@ def main():
 
     print("\n[Step 2] Processing Content -> Posting Schedule...")
     process_content(api)
+
+    print("\n[Step 3] Updating 24h post stats...")
+    update_24h_stats(api)
 
     print("\n" + "=" * 50)
     print("Done!")
